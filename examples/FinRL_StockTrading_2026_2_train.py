@@ -5,79 +5,176 @@ This series is a reproduction of paper "Deep reinforcement learning for
 automated stock trading: An ensemble strategy".
 
 Introduce how to use FinRL to make data into the gym form environment, and train DRL agents on it.
+
+学习重点：
+1. 理解 FinRL 的 StockTradingEnv 是如何将 CSV 数据转化为 Gym 环境的。
+2. 理解状态空间的计算公式：1（现金）+ 2×股票数（价格+持仓）+ 指标数×股票数。
+3. 理解 DRLAgent 如何封装 stable-baselines3 的模型获取、训练流程。
+4. 理解 5 种主流强化学习算法（A2C、DDPG、PPO、TD3、SAC）各自的特点和超参配置。
 """
 
 from __future__ import annotations
 
+# pandas 用来读 CSV 数据文件。
 import pandas as pd
+# configure 是 stable-baselines3 的日志配置工具，
+# 用于把训练过程中的损失、奖励等指标同时输出到终端、CSV 和 TensorBoard。
 from stable_baselines3.common.logger import configure
 
+# DRLAgent 是 FinRL 对 stable-baselines3 的高层封装。
+# 它提供了 get_model（创建模型）、train_model（训练）、
+# DRL_prediction（预测/回测）三个核心静态/实例方法。
 from finrl.agents.stablebaselines3.models import DRLAgent
+# INDICATORS 是技术指标列表，训练环境需要知道这些列的列名，
+# 才能在 state 向量中按正确位置取出指标值。
 from finrl.config import INDICATORS
+# RESULTS_DIR 是训练日志（tensorboard 等）的保存路径。
 from finrl.config import RESULTS_DIR
+# TRAINED_MODEL_DIR 是训练完成后模型参数的保存路径。
 from finrl.config import TRAINED_MODEL_DIR
+# check_and_make_directories 确保输出目录存在，不存在则自动创建。
 from finrl.main import check_and_make_directories
+# StockTradingEnv 是 FinRL 的股票交易 Gym 环境，
+# 继承自 gym.Env，提供了 step/reset 等标准接口。
+# 它的内部维护了现金、持仓、价格、成本等状态，
+# 以及买卖执行的完整逻辑。
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 
 # %% Part 1. Prepare directories
 
+# 确保模型保存目录存在。
+# 参数是目录路径列表，可以一次检查多个目录。
 check_and_make_directories([TRAINED_MODEL_DIR])
 
 # %% Part 2. Build environment
 
+# 读取数据脚本生成的训练数据 CSV。
+# 这个 CSV 包含了日期、股票代码、OHLCV、技术指标、VIX、turbulence 等所有列。
 train = pd.read_csv("train_data.csv")
+# CSV 第一列是 pd.to_csv() 写入的旧 index（行号），
+# 这里把它重新设回索引，避免作为特征的一部分。
 train = train.set_index(train.columns[0])
+# 把索引名字清空，保持整洁。
 train.index.names = [""]
 
+# --- 计算状态空间和动作空间的维度 ---
+# stock_dimension：有多少只股票。每个动作维度对应一只股票。
 stock_dimension = len(train.tic.unique())
+# state_space 是环境观察向量的长度，公式如下：
+#   1                 → 当前现金
+#   + stock_dimension  → 每只股票的收盘价（持股估值的基础）
+#   + stock_dimension  → 每只股票的当前持仓股数
+#   + len(INDICATORS) * stock_dimension  → 每只股票的技术指标值
+# 举例：30 只股票 + 8 个技术指标 → 1 + 30 + 30 + 240 = 301 维
 state_space = 1 + 2 * stock_dimension + len(INDICATORS) * stock_dimension
 print(f"Stock Dimension: {stock_dimension}, State Space: {state_space}")
 
+# buy_cost_list / sell_cost_list：每只股票的交易成本比例。
+# [0.001] * stock_dimension 表示每只股票的买卖手续费都是 0.1%（千分之一）。
+# 如果不同股票的费率不同，可以写成 [0.001, 0.002, ...] 的列表。
 buy_cost_list = sell_cost_list = [0.001] * stock_dimension
+# num_stock_shares：初始持仓。训练初期通常所有股票持仓为 0。
+# [0] * stock_dimension 表示一开始不持有任何股票。
 num_stock_shares = [0] * stock_dimension
 
+# env_kwargs 是传给 StockTradingEnv 的参数字典。
+# 每个参数的含义：
 env_kwargs = {
+    # hmax：单笔交易最大交易股数。
+    # 模型输出的动作值（∈ [-1, 1]）会被乘以 hmax，得到实际买卖股数。
     "hmax": 100,
+    # initial_amount：初始现金，默认 100 万美元。
     "initial_amount": 1000000,
+    # num_stock_shares：初始持仓股数列表。
     "num_stock_shares": num_stock_shares,
+    # buy_cost_pct：买入手续费率列表。
     "buy_cost_pct": buy_cost_list,
+    # sell_cost_pct：卖出手续费率列表。
     "sell_cost_pct": sell_cost_list,
+    # state_space：状态空间维度，必须和上面的公式一致。
     "state_space": state_space,
+    # stock_dim：股票数量。
     "stock_dim": stock_dimension,
+    # tech_indicator_list：技术指标列名列表，
+    # 环境会在读数据时按这些列名取出指标值拼入 state。
     "tech_indicator_list": INDICATORS,
+    # action_space：动作空间维度，每只股票一个连续动作值 ∈ [-1, 1]。
     "action_space": stock_dimension,
+    # reward_scaling：奖励缩放系数。
+    # 每步的 reward = (本步总资产 - 上步总资产) × reward_scaling。
+    # 1e-4 可以把几万块的浮动缩到个位数，有助于训练稳定。
     "reward_scaling": 1e-4,
 }
 
+# 用训练数据创建 Gym 环境。
+# df=train 指定了训练数据源。
+# **env_kwargs 把上面的参数字典展开传给 StockTradingEnv 的构造函数。
 e_train_gym = StockTradingEnv(df=train, **env_kwargs)
+# get_sb_env() 把自定义环境包装成 stable-baselines3 能直接使用的格式。
+# 内部使用 DummyVecEnv 做向量化封装（单进程环境）。
+# 返回 (env_train, _)，第二个返回值是初始观察，这里用 _ 忽略。
 env_train, _ = e_train_gym.get_sb_env()
+# 打印环境类型，确认是 DummyVecEnv 包装的对象。
 print(type(env_train))
 
 # %% Part 3. Train DRL Agents
 
+# 控制哪些算法参与训练。
+# 设为 False 可以跳过对应算法，节省时间。
 if_using_a2c = True
 if_using_ddpg = True
 if_using_ppo = True
 if_using_td3 = True
 if_using_sac = True
 
-# --- Agent 1: A2C ---
+# ============================================================
+# --- Agent 1: A2C (Advantage Actor-Critic) ---
+# A2C 是一种基于策略梯度的 on-policy 算法。
+# 它同时训练 Actor（策略网络，决定动作）和 Critic（价值网络，评估好坏）。
+# 优点：简单、训练快，适合作为 baseline。
+# 缺点：样本效率不如 off-policy 算法。
+# ============================================================
+
+# 创建 DRLAgent 实例，绑定到训练环境。
 agent = DRLAgent(env=env_train)
+# get_model("a2c") 从 stable-baselines3 获取 A2C 模型。
+# 不传 model_kwargs 则使用 FinRL 默认超参（见 config.py 中的 A2C_PARAMS）。
+# 内部会根据环境自动推断网络输入/输出维度。
 model_a2c = agent.get_model("a2c")
 if if_using_a2c:
+    # 配置日志输出路径，同时输出到终端、CSV 文件和 TensorBoard。
     tmp_path = RESULTS_DIR + "/a2c"
     new_logger_a2c = configure(tmp_path, ["stdout", "csv", "tensorboard"])
+    # 把配置好的 logger 绑定到模型上。
     model_a2c.set_logger(new_logger_a2c)
 
+# 训练模型（如果 if_using_a2c 为 True），否则 trained_a2c = None。
+# train_model 参数说明：
+#   model：要训练的模型对象。
+#   tb_log_name：TensorBoard 日志的子目录名。
+#   total_timesteps：总训练步数，20000 是示例值，
+#     实际应用中可能需要几十万到几百万步才能收敛。
 trained_a2c = (
     agent.train_model(model=model_a2c, tb_log_name="a2c", total_timesteps=20000)
     if if_using_a2c
     else None
 )
 if if_using_a2c:
+    # 保存训练好的模型到 trained_models/agent_a2c。
+    # 保存的是 stable-baselines3 模型格式，后续可以直接 load 出来做预测。
     trained_a2c.save(TRAINED_MODEL_DIR + "/agent_a2c")
 
-# --- Agent 2: DDPG ---
+# ============================================================
+# --- Agent 2: DDPG (Deep Deterministic Policy Gradient) ---
+# DDPG 是一种 off-policy 的确定性策略梯度算法。
+# 适合连续动作空间，使用经验回放缓冲池提高样本效率。
+# 它结合了 DQN（Q-learning）和 DPG 的思想。
+# 优点：样本效率高、适合高维连续动作。
+# 缺点：对超参敏感、容易过估计 Q 值。
+# ============================================================
+
+# 注意：这里重新创建了 DRLAgent 实例。
+# 实际上可以复用同一个 agent，但示例中每次重建确保环境状态干净。
 agent = DRLAgent(env=env_train)
 model_ddpg = agent.get_model("ddpg")
 if if_using_ddpg:
@@ -93,14 +190,28 @@ trained_ddpg = (
 if if_using_ddpg:
     trained_ddpg.save(TRAINED_MODEL_DIR + "/agent_ddpg")
 
-# --- Agent 3: PPO ---
+# ============================================================
+# --- Agent 3: PPO (Proximal Policy Optimization) ---
+# PPO 是目前最主流的 on-policy 算法之一。
+# 通过限制策略更新幅度（clip）来保证训练稳定性。
+# 优点：稳定、效果好、调参相对容易。
+# 缺点：样本效率不如 off-policy 算法（每一步都需要新数据）。
+# ============================================================
+
 agent = DRLAgent(env=env_train)
+# 这里显式传入 PPO_PARAMS 覆盖默认配置。
+# 不改的话会使用 config.py 中的 PPO_PARAMS。
 PPO_PARAMS = {
+    # n_steps：每次更新前收集的步数（rollout 长度）。
     "n_steps": 2048,
+    # ent_coef：熵正则化系数，鼓励探索。值越大探索越多。
     "ent_coef": 0.01,
+    # learning_rate：学习率。
     "learning_rate": 0.00025,
+    # batch_size：每次 SGD 更新的批量大小。
     "batch_size": 128,
 }
+# 传入 model_kwargs=PPO_PARAMS，用自定义超参覆盖默认值。
 model_ppo = agent.get_model("ppo", model_kwargs=PPO_PARAMS)
 if if_using_ppo:
     tmp_path = RESULTS_DIR + "/ppo"
@@ -115,11 +226,25 @@ trained_ppo = (
 if if_using_ppo:
     trained_ppo.save(TRAINED_MODEL_DIR + "/agent_ppo")
 
-# --- Agent 4: TD3 ---
+# ============================================================
+# --- Agent 4: TD3 (Twin Delayed DDPG) ---
+# TD3 是 DDPG 的改进版，解决了 Q 值过估计问题。
+# 主要改进：
+#   1. 双 Q 网络（Clipped Double-Q）：用两个 Q 网络，取较小值，抑制过估计。
+#   2. 延迟策略更新：Critic 更新比 Actor 更频繁。
+#   3. 目标策略平滑：给目标动作加噪声，使策略更鲁棒。
+# 优点：比 DDPG 更稳定、效果更好。
+# 缺点：计算量稍大（需要双 Q 网络）。
+# ============================================================
+
 agent = DRLAgent(env=env_train)
 TD3_PARAMS = {
+    # batch_size：每次从回放缓冲区采样的批量大小。
     "batch_size": 100,
+    # buffer_size：回放缓冲区的最大容量。
+    # 100 万条经验，约等于约 300 天 × 30 只股票的数据规模。
     "buffer_size": 1000000,
+    # learning_rate：学习率。
     "learning_rate": 0.001,
 }
 model_td3 = agent.get_model("td3", model_kwargs=TD3_PARAMS)
@@ -136,13 +261,24 @@ trained_td3 = (
 if if_using_td3:
     trained_td3.save(TRAINED_MODEL_DIR + "/agent_td3")
 
-# --- Agent 5: SAC ---
+# ============================================================
+# --- Agent 5: SAC (Soft Actor-Critic) ---
+# SAC 是目前 state-of-the-art 的 off-policy 算法之一。
+# 它在最大化回报的同时，也最大化策略的熵（随机性）。
+# 优点：样本效率高、探索能力强、训练稳定。
+# 缺点：超参较多（温度参数 α 的调节有一定技巧）。
+# ============================================================
+
 agent = DRLAgent(env=env_train)
 SAC_PARAMS = {
     "batch_size": 128,
     "buffer_size": 100000,
     "learning_rate": 0.0001,
+    # learning_starts：在收集多少步经验后开始学习。
+    # 前 100 步只收集经验不学习，填满一定量再开始更新。
     "learning_starts": 100,
+    # ent_coef："auto_0.1" 表示自动调节熵系数，
+    # 初始值为 0.1，训练过程中根据目标熵自动调整。
     "ent_coef": "auto_0.1",
 }
 model_sac = agent.get_model("sac", model_kwargs=SAC_PARAMS)
@@ -159,4 +295,5 @@ trained_sac = (
 if if_using_sac:
     trained_sac.save(TRAINED_MODEL_DIR + "/agent_sac")
 
+# 训练完成，打印模型保存路径。
 print("All agents trained and saved to", TRAINED_MODEL_DIR)

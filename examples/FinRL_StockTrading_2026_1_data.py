@@ -111,7 +111,35 @@ fe = FeatureEngineer(
     use_vix=True,
     # True 表示加入 turbulence 指标，用于描述市场异常波动程度。
     use_turbulence=True,
-    # False 表示这里先不加入你自己额外定义的特征。
+    # user_defined_feature：是否启用自定义因子。
+    # 如果设为 True，preprocess_data() 内部会自动调用 add_user_defined_feature()。
+    #
+    # ============================================================
+    # 【扩展指南】如何通过 FeatureEngineer 加入自己挖掘的因子：
+    # ============================================================
+    # 第 1 步：打开 finrl/meta/preprocessor/preprocessors.py，
+    #         找到 add_user_defined_feature(self, data) 方法。
+    #         在 return df 之前添加你的因子计算逻辑。
+    #
+    #         例如加一个 "5 日价格动量因子"：
+    #         df["momentum_5"] = df.groupby("tic")["close"].pct_change(5)
+    #
+    #         ⚠️ 注意：数据中有多只股票，所以计算时必须先 groupby("tic")
+    #         再操作，否则 shift/pct_change 会跨股票串行，算出错误值。
+    #
+    #         你可以添加任意多个因子，只要最终 df 中多了对应列即可：
+    #         df["my_factor_1"] = ...
+    #         df["my_factor_2"] = ...
+    #
+    # 第 2 步：把下面的 False 改成 True，让 FeatureEngineer 在
+    #         preprocess_data() 流程中自动调用你写的 add_user_defined_feature()。
+    #         生成的 processed 中就会包含你新增的因子列。
+    #
+    # 第 3 步（重要）：加了新因子后，训练环境的状态空间维度也要同步更新。
+    #         训练脚本中 state_space 的计算公式需要加上你的因子列数：
+    #         state_space = 1 + 2*stock_dimension + (len(INDICATORS)+你增加的因子数)*stock_dimension
+    #         否则环境初始化时会因维度不匹配而报错。
+    # ============================================================
     user_defined_feature=False,
 )
 
