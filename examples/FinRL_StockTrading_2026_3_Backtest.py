@@ -93,15 +93,19 @@ env_kwargs = {
     "reward_scaling": 1e-4,
 }
 
-# 创建回测环境，注意两个风控参数：
+# 创建回测环境，注意两个风控参数（需要配合理解）：
 #   turbulence_threshold=70：
-#     当 turbulence（市场扰动指数）>= 70 时，
-#     环境会强制清仓（卖出所有持仓）并不允许买入。
-#     这是一个简单的风险控制机制：市场剧烈异常波动时空仓观望。
+#     这是一个通用风控阈值，对什么指标生效取决于 risk_indicator_col。
+#     这里 risk_indicator_col="vix"，所以实际是 VIX >= 70 时触发清仓。
+#     （注意：框架内部变量名叫 self.turbulence，但实际存的是 VIX 列的值，
+#      这是 FinRL 命名不够严谨的地方，不要被变量名误导。）
 #   risk_indicator_col="vix"：
-#     指定用 vix（波动率指数/恐慌指数）作为风控触发指标。
-#     当 VIX >= 70 时触发清仓。
-#     如果不传这两个参数，则不启用风控。
+#     指定用哪一列作为风控触发指标。默认是 "turbulence"，
+#     这里改成 "vix"，即用波动率指数/恐慌指数作为风控依据。
+#     当 VIX >= turbulence_threshold（70）时：
+#       - 强制卖出所有持仓（清仓）
+#       - 不允许买入
+#     如果不传 turbulence_threshold，则不启用任何风控。
 e_trade_gym = StockTradingEnv(
     df=trade, turbulence_threshold=70, risk_indicator_col="vix", **env_kwargs
 )
