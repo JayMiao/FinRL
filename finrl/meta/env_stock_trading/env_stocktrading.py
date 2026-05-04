@@ -55,7 +55,14 @@ class StockTradingEnv(gym.Env):
         model_name="",
         mode="",
         iteration="",
+        reward_type: str = "asset_diff",
+        turnover_penalty: float = 0.0,
     ):
+        # Phase 2 改进：
+        # reward_type 可选 'asset_diff'（原始线性资产差）或 'log_return'（对数收益，更稳定且鼓励复利）
+        # turnover_penalty 多少比例代价乘以交易额当作惩罚项，减少过度交易
+        self.reward_type = reward_type
+        self.turnover_penalty = turnover_penalty
         self.day = day
         self.df = df
         self.stock_dim = stock_dim
@@ -357,9 +364,27 @@ class StockTradingEnv(gym.Env):
             )
             self.asset_memory.append(end_total_asset)
             self.date_memory.append(self._get_date())
-            self.reward = end_total_asset - begin_total_asset
-            self.rewards_memory.append(self.reward)
-            self.reward = self.reward * self.reward_scaling
+            # 计算本 step 的交易额（只能估算：用 _sell_stock/_buy_stock 返回的股数 * 当前价）
+            # actions 里以及不便重取，这里采用近似：资产变化中的交易成本部分已在 _buy/_sell 里扭除
+            if self.reward_type == "log_return":
+                # 对数收益：数值范围小、鼓励复利、天然防止负资产爆炸
+                if begin_total_asset > 0 and end_total_asset > 0:
+                    raw_reward = float(np.log(end_total_asset / begin_total_asset))
+                else:
+                    raw_reward = -1.0
+                # turnover penalty（迷你计算）：sum |action_shares * price| / begin_asset
+                if self.turnover_penalty > 0:
+                    turnover = float(np.sum(
+                        np.abs(actions) * np.array(self.state[1 : self.stock_dim + 1])
+                    )) / max(begin_total_asset, 1.0)
+                    raw_reward -= self.turnover_penalty * turnover
+                self.reward = raw_reward
+                self.rewards_memory.append(self.reward)
+                # log_return 已经是 O(1e-3)阶不需再乘 reward_scaling。
+            else:
+                self.reward = end_total_asset - begin_total_asset
+                self.rewards_memory.append(self.reward)
+                self.reward = self.reward * self.reward_scaling
             self.state_memory.append(
                 self.state
             )  # add current state in state_recorder for each step

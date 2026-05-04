@@ -72,7 +72,8 @@ class TensorboardCallback(BaseCallback):
             self.logger.record(key="train/reward_min", value=None)
             self.logger.record(key="train/reward_mean", value=None)
             self.logger.record(key="train/reward_max", value=None)
-            print("Logging Error:", error)
+            # 注意：off-policy 算法（DDPG/TD3/SAC）没有 rollout_buffer，
+            # 这个错误是预期的，不影响训练。不打印以避免日志刷屏。
         return True
 
 

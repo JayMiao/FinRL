@@ -195,3 +195,20 @@ print(f"Trade data length: {len(trade)}")
 train.to_csv("train_data.csv")
 trade.to_csv("trade_data.csv")
 print("Data saved to train_data.csv and trade_data.csv")
+
+# Phase 1 改进：额外保存"全量"数据集 all_data.csv，覆盖 2014-01-06 ~ 2026-03-20。
+# 这样新版训练脚本可以在运行时按需切分出：
+#   - 训练集：2014-01-06 ~ 2022-12-31
+#   - 验证集（held-out for early stopping / model selection）：2023-01-01 ~ 2023-12-31
+#   - 三个测试窗口（用于多市况评测）：
+#       * 2024-Q1（牛市段）：2024-01-01 ~ 2024-04-01
+#       * 2024-Q4（震荡段）：2024-10-01 ~ 2025-01-01
+#       * 2026-Q1（熊市段）：2026-01-01 ~ 2026-03-20
+# 之所以不直接修改 finrl/config.py 的全局常量，是因为这会影响 unit_tests
+# 和其它 example 脚本；改成"在脚本里就近切分"更稳。
+processed_full.to_csv("all_data.csv")
+print(
+    f"All data (full range) saved to all_data.csv, "
+    f"date range: {processed_full['date'].min()} ~ {processed_full['date'].max()}, "
+    f"rows: {len(processed_full)}"
+)
